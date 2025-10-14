@@ -6,10 +6,15 @@ import { Bookmarks } from 'wxt/browser'
 export default defineBackground(() => {
 
   browser.runtime.onInstalled.addListener(c => {
+    // Initialize auto-sync on installation
+    initializeAutoSync();
   });
 
   let curOperType = OperType.NONE;
   let curBrowserType = BrowserType.CHROME;
+  let autoSyncDebounceTimer: NodeJS.Timeout | null = null;
+  let lastSyncTime: number = 0;
+  const DEBOUNCE_DELAY = 3000; // 3 seconds debounce delay
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.name === 'upload') {
       curOperType = OperType.SYNC
@@ -45,36 +50,49 @@ export default defineBackground(() => {
         sendResponse(true);
       });
     }
+    if (msg.name === 'updateAutoSync') {
+      initializeAutoSync().then(() => {
+        sendResponse(true);
+      });
+    }
     return true;
   });
-  browser.bookmarks.onCreated.addListener((id, info) => {
+  browser.bookmarks.onCreated.addListener(async (id, info) => {
     if (curOperType === OperType.NONE) {
       // console.log("onCreated", id, info)
       browser.action.setBadgeText({ text: "!" });
       browser.action.setBadgeBackgroundColor({ color: "#F00" });
       refreshLocalCount();
+      // Trigger auto-sync if enabled
+      await triggerAutoSync();
     }
   });
-  browser.bookmarks.onChanged.addListener((id, info) => {
+  browser.bookmarks.onChanged.addListener(async (id, info) => {
     if (curOperType === OperType.NONE) {
       // console.log("onChanged", id, info)
       browser.action.setBadgeText({ text: "!" });
       browser.action.setBadgeBackgroundColor({ color: "#F00" });
+      // Trigger auto-sync if enabled
+      await triggerAutoSync();
     }
   })
-  browser.bookmarks.onMoved.addListener((id, info) => {
+  browser.bookmarks.onMoved.addListener(async (id, info) => {
     if (curOperType === OperType.NONE) {
       // console.log("onMoved", id, info)
       browser.action.setBadgeText({ text: "!" });
       browser.action.setBadgeBackgroundColor({ color: "#F00" });
+      // Trigger auto-sync if enabled
+      await triggerAutoSync();
     }
   })
-  browser.bookmarks.onRemoved.addListener((id, info) => {
+  browser.bookmarks.onRemoved.addListener(async (id, info) => {
     if (curOperType === OperType.NONE) {
       // console.log("onRemoved", id, info)
       browser.action.setBadgeText({ text: "!" });
       browser.action.setBadgeBackgroundColor({ color: "#F00" });
       refreshLocalCount();
+      // Trigger auto-sync if enabled
+      await triggerAutoSync();
     }
   })
 
@@ -379,5 +397,128 @@ export default defineBackground(() => {
       }
   }
   */
+
+  // Auto-sync functions
+  async function initializeAutoSync() {
+    // Clear any existing debounce timer
+    if (autoSyncDebounceTimer) {
+      clearTimeout(autoSyncDebounceTimer);
+      autoSyncDebounceTimer = null;
+    }
+
+    const setting = await Setting.build();
+
+    // If auto-sync is enabled, perform an initial sync to get the latest state
+    if (setting.enableAutoSync && setting.githubToken && setting.gistID) {
+      await performAutoSync();
+    }
+  }
+
+  async function triggerAutoSync() {
+    const setting = await Setting.build();
+
+    // Only trigger if auto-sync is enabled
+    if (!setting.enableAutoSync || !setting.githubToken || !setting.gistID) {
+      return;
+    }
+
+    // Clear existing timer if any
+    if (autoSyncDebounceTimer) {
+      clearTimeout(autoSyncDebounceTimer);
+    }
+
+    // Set a new debounce timer
+    autoSyncDebounceTimer = setTimeout(async () => {
+      await performAutoSync();
+      autoSyncDebounceTimer = null;
+    }, DEBOUNCE_DELAY);
+  }
+
+  async function performAutoSync() {
+    try {
+      const setting = await Setting.build();
+
+      // Check if auto-sync is still enabled and configured
+      if (!setting.enableAutoSync || !setting.githubToken || !setting.gistID) {
+        return;
+      }
+
+      // Set operation type to prevent badge updates
+      curOperType = OperType.SYNC;
+
+      // Get local bookmarks
+      const localBookmarks = await getBookmarks();
+      const localCount = getBookmarkCount(localBookmarks);
+
+      // Get remote bookmarks
+      const remoteGist = await BookmarkService.get();
+      let shouldUpload = true;
+
+      if (remoteGist) {
+        const remoteData: SyncDataInfo = JSON.parse(remoteGist);
+        const remoteCount = getBookmarkCount(remoteData.bookmarks);
+
+        // Simple strategy: if remote is newer and has different count, download
+        // Otherwise, upload local changes
+        if (remoteData.createDate > lastSyncTime && remoteCount !== localCount) {
+          // Download remote bookmarks
+          await clearBookmarkTree();
+          await createBookmarkTree(remoteData.bookmarks);
+          await browser.storage.local.set({ remoteCount: remoteCount });
+          shouldUpload = false;
+
+          if (setting.enableNotify) {
+            await browser.notifications.create({
+              type: "basic",
+              iconUrl: iconLogo,
+              title: browser.i18n.getMessage('autoSync') || 'Auto-sync',
+              message: browser.i18n.getMessage('downloadedFromGist') || 'Downloaded bookmarks from Gist'
+            });
+          }
+        }
+      }
+
+      if (shouldUpload) {
+        // Upload local bookmarks
+        const syncdata = new SyncDataInfo();
+        syncdata.version = browser.runtime.getManifest().version;
+        syncdata.createDate = Date.now();
+        syncdata.bookmarks = formatBookmarks(localBookmarks);
+        syncdata.browser = navigator.userAgent;
+
+        await BookmarkService.update({
+          files: {
+            [setting.gistFileName]: {
+              content: JSON.stringify(syncdata)
+            }
+          },
+          description: setting.gistFileName
+        });
+
+        await browser.storage.local.set({ remoteCount: localCount });
+
+        if (setting.enableNotify) {
+          await browser.notifications.create({
+            type: "basic",
+            iconUrl: iconLogo,
+            title: browser.i18n.getMessage('autoSync') || 'Auto-sync',
+            message: browser.i18n.getMessage('uploadedToGist') || 'Uploaded bookmarks to Gist'
+          });
+        }
+      }
+
+      lastSyncTime = Date.now();
+      browser.action.setBadgeText({ text: "" });
+
+    } catch (error) {
+      console.error('Auto-sync error:', error);
+    } finally {
+      curOperType = OperType.NONE;
+      await refreshLocalCount();
+    }
+  }
+
+  // Initialize auto-sync on startup
+  initializeAutoSync();
 
 });

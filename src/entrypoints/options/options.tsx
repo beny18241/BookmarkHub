@@ -11,6 +11,11 @@ const Popup: React.FC = () => {
         optionsStorage.syncForm('#formOptions');
     }, [])
 
+    const handleAutoSyncChange = () => {
+        // Send message to background to update auto-sync
+        browser.runtime.sendMessage({ name: 'updateAutoSync' });
+    };
+
     return (
         <Container>
             <Form id='formOptions' name='formOptions'>
@@ -47,6 +52,21 @@ const Popup: React.FC = () => {
                             ref={register}
                             type="switch"
                         />
+                    </Col>
+                </Form.Group>
+                <Form.Group as={Row}>
+                    <Form.Label column="sm" sm={3} lg={2} xs={3}>{browser.i18n.getMessage('enableAutoSync') || 'Auto-sync'}</Form.Label>
+                    <Col sm={9} lg={10} xs={9}>
+                        <Form.Check
+                            id="enableAutoSync"
+                            name="enableAutoSync"
+                            ref={register}
+                            type="switch"
+                            onChange={handleAutoSyncChange}
+                        />
+                        <Form.Text className="text-muted">
+                            {browser.i18n.getMessage('autoSyncDesc') || 'Automatically sync bookmarks when changes are detected'}
+                        </Form.Text>
                     </Col>
                 </Form.Group>
                 <Form.Group as={Row}>
