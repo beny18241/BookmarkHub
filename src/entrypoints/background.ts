@@ -10,12 +10,27 @@ export default defineBackground(() => {
     initializeAutoSync();
   });
 
+  // Also sync on browser startup (when browser opens)
+  browser.runtime.onStartup.addListener(() => {
+    console.log('Browser startup detected, initializing auto-sync...');
+    initializeAutoSync();
+  });
+
   let curOperType = OperType.NONE;
   let curBrowserType = BrowserType.CHROME;
   let autoSyncDebounceTimer: NodeJS.Timeout | null = null;
+  let autoSyncIntervalTimer: NodeJS.Timeout | null = null;
   let lastRemoteUpdateTime: number = 0;
   let isSyncing: boolean = false;
   const DEBOUNCE_DELAY = 3000; // 3 seconds debounce delay
+
+  // Load last remote update time from storage on startup
+  browser.storage.local.get('lastRemoteUpdateTime').then(result => {
+    if (result.lastRemoteUpdateTime) {
+      lastRemoteUpdateTime = result.lastRemoteUpdateTime;
+      console.log('Loaded last remote update time:', new Date(lastRemoteUpdateTime).toISOString());
+    }
+  });
 
   // Icon states
   const ICON_SYNCED = "✓";
@@ -407,21 +422,58 @@ export default defineBackground(() => {
 
   // Auto-sync functions
   async function initializeAutoSync() {
-    // Clear any existing debounce timer
+    // Clear any existing timers
     if (autoSyncDebounceTimer) {
       clearTimeout(autoSyncDebounceTimer);
       autoSyncDebounceTimer = null;
+    }
+    if (autoSyncIntervalTimer) {
+      clearInterval(autoSyncIntervalTimer);
+      autoSyncIntervalTimer = null;
     }
 
     const setting = await Setting.build();
 
     // If auto-sync is enabled, perform an initial sync to get the latest state
     if (setting.enableAutoSync && setting.githubToken && setting.gistID) {
-      // Show synced state on startup (optimistic)
-      browser.action.setBadgeText({ text: ICON_SYNCED });
-      browser.action.setBadgeBackgroundColor({ color: "#00AA00" });
+      // Show syncing state on startup
+      browser.action.setBadgeText({ text: ICON_SYNCING });
+      browser.action.setBadgeBackgroundColor({ color: "#0000FF" });
 
+      // Perform initial sync to get the latest state
       await performAutoSync();
+
+      // Set up periodic sync to check for remote changes
+      // Use more frequent checks initially, then slower for battery efficiency
+      const syncIntervalMinutes = setting.autoSyncInterval || 5; // Default to 5 minutes
+      let currentIntervalMs = Math.min(60000, syncIntervalMinutes * 60 * 1000); // Start with 1 minute or configured interval
+
+      // Initial quick check after 30 seconds to catch immediate changes
+      setTimeout(async () => {
+        if (!isSyncing) {
+          await checkForRemoteChanges();
+        }
+      }, 30000);
+
+      // Set up regular interval
+      autoSyncIntervalTimer = setInterval(async () => {
+        // Only check for remote changes if not already syncing
+        if (!isSyncing) {
+          await checkForRemoteChanges();
+        }
+
+        // Gradually increase interval up to the configured max
+        if (currentIntervalMs < syncIntervalMinutes * 60 * 1000) {
+          clearInterval(autoSyncIntervalTimer!);
+          currentIntervalMs = Math.min(currentIntervalMs * 2, syncIntervalMinutes * 60 * 1000);
+
+          autoSyncIntervalTimer = setInterval(async () => {
+            if (!isSyncing) {
+              await checkForRemoteChanges();
+            }
+          }, currentIntervalMs);
+        }
+      }, currentIntervalMs);
     }
   }
 
@@ -443,6 +495,67 @@ export default defineBackground(() => {
       await performAutoSync();
       autoSyncDebounceTimer = null;
     }, DEBOUNCE_DELAY);
+  }
+
+  async function checkForRemoteChanges() {
+    try {
+      const setting = await Setting.build();
+
+      // Check if auto-sync is still enabled and configured
+      if (!setting.enableAutoSync || !setting.githubToken || !setting.gistID) {
+        return;
+      }
+
+      // Don't show syncing indicator for background checks to avoid UI noise
+      // Get remote bookmarks
+      const remoteGist = await BookmarkService.get();
+
+      if (remoteGist) {
+        const remoteData: SyncDataInfo = JSON.parse(remoteGist);
+
+        // Get local bookmarks for comparison
+        const localBookmarks = await getBookmarks();
+        const localData = formatBookmarks(localBookmarks);
+        const localContentHash = JSON.stringify(localData);
+        const remoteContentHash = JSON.stringify(remoteData.bookmarks);
+
+        // If content differs and remote is newer, download changes
+        if (localContentHash !== remoteContentHash) {
+          // Check if remote has newer changes based on timestamp
+          if (!lastRemoteUpdateTime || remoteData.createDate > lastRemoteUpdateTime) {
+            console.log('Auto-sync: Detected newer remote changes, downloading...');
+
+            // Show syncing state
+            isSyncing = true;
+            browser.action.setBadgeText({ text: ICON_SYNCING });
+            browser.action.setBadgeBackgroundColor({ color: "#0000FF" });
+            curOperType = OperType.SYNC;
+
+            // Download remote changes
+            await clearBookmarkTree();
+            await createBookmarkTree(remoteData.bookmarks);
+            const remoteCount = getBookmarkCount(remoteData.bookmarks);
+            await browser.storage.local.set({ remoteCount: remoteCount });
+            lastRemoteUpdateTime = remoteData.createDate;
+            await browser.storage.local.set({ lastRemoteUpdateTime: lastRemoteUpdateTime });
+
+            // Show synced state
+            browser.action.setBadgeText({ text: ICON_SYNCED });
+            browser.action.setBadgeBackgroundColor({ color: "#00AA00" });
+
+            curOperType = OperType.NONE;
+            isSyncing = false;
+            await refreshLocalCount();
+          }
+        } else {
+          // Update timestamp even if content is the same
+          lastRemoteUpdateTime = remoteData.createDate;
+          await browser.storage.local.set({ lastRemoteUpdateTime: lastRemoteUpdateTime });
+        }
+      }
+    } catch (error) {
+      console.error('Check for remote changes error:', error);
+    }
   }
 
   async function performAutoSync() {
@@ -474,11 +587,6 @@ export default defineBackground(() => {
         const remoteData: SyncDataInfo = JSON.parse(remoteGist);
         const remoteCount = getBookmarkCount(remoteData.bookmarks);
 
-        // Smart sync decision:
-        // 1. If we haven't tracked remote time yet, compare content
-        // 2. If remote was updated after our last known update AND content differs, download
-        // 3. Otherwise upload our changes
-
         const localContentHash = JSON.stringify(localData);
         const remoteContentHash = JSON.stringify(remoteData.bookmarks);
 
@@ -486,13 +594,16 @@ export default defineBackground(() => {
           // Already in sync, nothing to do
           console.log('Auto-sync: Already in sync');
           lastRemoteUpdateTime = remoteData.createDate;
-        } else if (lastRemoteUpdateTime > 0 && remoteData.createDate > lastRemoteUpdateTime) {
-          // Remote has newer changes, download them
-          console.log('Auto-sync: Downloading newer remote changes');
+          await browser.storage.local.set({ lastRemoteUpdateTime: lastRemoteUpdateTime });
+        } else if (remoteData.createDate > Date.now() - 10000) {
+          // If remote was updated in the last 10 seconds, it's probably from another browser
+          // Download those changes instead of overwriting
+          console.log('Auto-sync: Recent remote changes detected, downloading...');
           await clearBookmarkTree();
           await createBookmarkTree(remoteData.bookmarks);
           await browser.storage.local.set({ remoteCount: remoteCount });
           lastRemoteUpdateTime = remoteData.createDate;
+          await browser.storage.local.set({ lastRemoteUpdateTime: lastRemoteUpdateTime });
         } else {
           // Upload local changes
           console.log('Auto-sync: Uploading local changes');
@@ -513,6 +624,7 @@ export default defineBackground(() => {
 
           await browser.storage.local.set({ remoteCount: localCount });
           lastRemoteUpdateTime = syncdata.createDate;
+          await browser.storage.local.set({ lastRemoteUpdateTime: lastRemoteUpdateTime });
         }
       } else {
         // No remote data, upload initial
@@ -534,6 +646,7 @@ export default defineBackground(() => {
 
         await browser.storage.local.set({ remoteCount: localCount });
         lastRemoteUpdateTime = syncdata.createDate;
+        await browser.storage.local.set({ lastRemoteUpdateTime: lastRemoteUpdateTime });
       }
 
       // Show synced icon (keep it persistent)
