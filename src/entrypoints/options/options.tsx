@@ -64,21 +64,9 @@ const Popup: React.FC = () => {
                             type="switch"
                             onChange={handleAutoSyncChange}
                         />
-                    </Col>
-                </Form.Group>
-                <Form.Group as={Row}>
-                    <Form.Label column="sm" sm={3} lg={2} xs={3}>{browser.i18n.getMessage('autoSyncInterval') || 'Sync interval (minutes)'}</Form.Label>
-                    <Col sm={9} lg={10} xs={9}>
-                        <Form.Control
-                            name="autoSyncInterval"
-                            ref={register}
-                            type="number"
-                            min="5"
-                            max="1440"
-                            placeholder="30"
-                            size="sm"
-                            onChange={handleAutoSyncChange}
-                        />
+                        <Form.Text className="text-muted">
+                            {browser.i18n.getMessage('autoSyncDesc') || 'Automatically sync bookmarks when changes are detected'}
+                        </Form.Text>
                     </Col>
                 </Form.Group>
                 <Form.Group as={Row}>

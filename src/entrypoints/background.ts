@@ -12,8 +12,9 @@ export default defineBackground(() => {
 
   let curOperType = OperType.NONE;
   let curBrowserType = BrowserType.CHROME;
-  let autoSyncIntervalId: NodeJS.Timeout | null = null;
+  let autoSyncDebounceTimer: NodeJS.Timeout | null = null;
   let lastSyncTime: number = 0;
+  const DEBOUNCE_DELAY = 3000; // 3 seconds debounce delay
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.name === 'upload') {
       curOperType = OperType.SYNC
@@ -56,34 +57,42 @@ export default defineBackground(() => {
     }
     return true;
   });
-  browser.bookmarks.onCreated.addListener((id, info) => {
+  browser.bookmarks.onCreated.addListener(async (id, info) => {
     if (curOperType === OperType.NONE) {
       // console.log("onCreated", id, info)
       browser.action.setBadgeText({ text: "!" });
       browser.action.setBadgeBackgroundColor({ color: "#F00" });
       refreshLocalCount();
+      // Trigger auto-sync if enabled
+      await triggerAutoSync();
     }
   });
-  browser.bookmarks.onChanged.addListener((id, info) => {
+  browser.bookmarks.onChanged.addListener(async (id, info) => {
     if (curOperType === OperType.NONE) {
       // console.log("onChanged", id, info)
       browser.action.setBadgeText({ text: "!" });
       browser.action.setBadgeBackgroundColor({ color: "#F00" });
+      // Trigger auto-sync if enabled
+      await triggerAutoSync();
     }
   })
-  browser.bookmarks.onMoved.addListener((id, info) => {
+  browser.bookmarks.onMoved.addListener(async (id, info) => {
     if (curOperType === OperType.NONE) {
       // console.log("onMoved", id, info)
       browser.action.setBadgeText({ text: "!" });
       browser.action.setBadgeBackgroundColor({ color: "#F00" });
+      // Trigger auto-sync if enabled
+      await triggerAutoSync();
     }
   })
-  browser.bookmarks.onRemoved.addListener((id, info) => {
+  browser.bookmarks.onRemoved.addListener(async (id, info) => {
     if (curOperType === OperType.NONE) {
       // console.log("onRemoved", id, info)
       browser.action.setBadgeText({ text: "!" });
       browser.action.setBadgeBackgroundColor({ color: "#F00" });
       refreshLocalCount();
+      // Trigger auto-sync if enabled
+      await triggerAutoSync();
     }
   })
 
@@ -391,29 +400,38 @@ export default defineBackground(() => {
 
   // Auto-sync functions
   async function initializeAutoSync() {
-    // Clear existing interval if any
-    if (autoSyncIntervalId) {
-      clearInterval(autoSyncIntervalId);
-      autoSyncIntervalId = null;
+    // Clear any existing debounce timer
+    if (autoSyncDebounceTimer) {
+      clearTimeout(autoSyncDebounceTimer);
+      autoSyncDebounceTimer = null;
     }
 
     const setting = await Setting.build();
 
+    // If auto-sync is enabled, perform an initial sync to get the latest state
     if (setting.enableAutoSync && setting.githubToken && setting.gistID) {
-      // Convert minutes to milliseconds
-      const intervalMs = setting.autoSyncInterval * 60 * 1000;
-
-      // Set up periodic sync
-      autoSyncIntervalId = setInterval(async () => {
-        await performAutoSync();
-      }, intervalMs);
-
-      // Also sync immediately if it's been long enough since last sync
-      const timeSinceLastSync = Date.now() - lastSyncTime;
-      if (timeSinceLastSync > intervalMs) {
-        await performAutoSync();
-      }
+      await performAutoSync();
     }
+  }
+
+  async function triggerAutoSync() {
+    const setting = await Setting.build();
+
+    // Only trigger if auto-sync is enabled
+    if (!setting.enableAutoSync || !setting.githubToken || !setting.gistID) {
+      return;
+    }
+
+    // Clear existing timer if any
+    if (autoSyncDebounceTimer) {
+      clearTimeout(autoSyncDebounceTimer);
+    }
+
+    // Set a new debounce timer
+    autoSyncDebounceTimer = setTimeout(async () => {
+      await performAutoSync();
+      autoSyncDebounceTimer = null;
+    }, DEBOUNCE_DELAY);
   }
 
   async function performAutoSync() {
@@ -422,10 +440,6 @@ export default defineBackground(() => {
 
       // Check if auto-sync is still enabled and configured
       if (!setting.enableAutoSync || !setting.githubToken || !setting.gistID) {
-        if (autoSyncIntervalId) {
-          clearInterval(autoSyncIntervalId);
-          autoSyncIntervalId = null;
-        }
         return;
       }
 
