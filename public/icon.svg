@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Background circle -->
+  <circle cx="64" cy="64" r="60" fill="#4285F4" opacity="0.1"/>
+
+  <!-- Bookmark icon -->
+  <path d="M48 20h32c2.2 0 4 1.8 4 4v70c0 2.2-1.8 4-4 4-0.7 0-1.4-0.2-2-0.6L64 84 50 97.4c-1.7 1.6-4.4 1.5-6-0.2-0.4-0.5-0.6-1.2-0.6-2V24c0-2.2 1.8-4 4-4z" fill="#4285F4"/>
+
+  <!-- Sync arrows -->
+  <g stroke="#34A853" stroke-width="4" fill="none" stroke-linecap="round">
+    <!-- Top curved arrow -->
+    <path d="M 90 45 Q 90 25, 70 25 L 58 25"/>
+    <polyline points="62,20 58,25 62,30" fill="#34A853" stroke="none"/>
+
+    <!-- Bottom curved arrow -->
+    <path d="M 38 83 Q 38 103, 58 103 L 70 103"/>
+    <polyline points="66,108 70,103 66,98" fill="#34A853" stroke="none"/>
+  </g>
+
+  <!-- Auto text -->
+  <text x="64" y="118" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#4285F4">AUTO</text>
+</svg>

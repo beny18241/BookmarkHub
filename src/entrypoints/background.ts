@@ -13,8 +13,14 @@ export default defineBackground(() => {
   let curOperType = OperType.NONE;
   let curBrowserType = BrowserType.CHROME;
   let autoSyncDebounceTimer: NodeJS.Timeout | null = null;
-  let lastSyncTime: number = 0;
+  let lastRemoteUpdateTime: number = 0;
+  let isSyncing: boolean = false;
   const DEBOUNCE_DELAY = 3000; // 3 seconds debounce delay
+
+  // Icon states
+  const ICON_SYNCED = "✓";
+  const ICON_NOT_SYNCED = "!";
+  const ICON_SYNCING = "↻";
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.name === 'upload') {
       curOperType = OperType.SYNC
@@ -59,9 +65,9 @@ export default defineBackground(() => {
   });
   browser.bookmarks.onCreated.addListener(async (id, info) => {
     if (curOperType === OperType.NONE) {
-      // console.log("onCreated", id, info)
-      browser.action.setBadgeText({ text: "!" });
-      browser.action.setBadgeBackgroundColor({ color: "#F00" });
+      // Show not synced icon
+      browser.action.setBadgeText({ text: ICON_NOT_SYNCED });
+      browser.action.setBadgeBackgroundColor({ color: "#FFA500" }); // Orange
       refreshLocalCount();
       // Trigger auto-sync if enabled
       await triggerAutoSync();
@@ -69,27 +75,27 @@ export default defineBackground(() => {
   });
   browser.bookmarks.onChanged.addListener(async (id, info) => {
     if (curOperType === OperType.NONE) {
-      // console.log("onChanged", id, info)
-      browser.action.setBadgeText({ text: "!" });
-      browser.action.setBadgeBackgroundColor({ color: "#F00" });
+      // Show not synced icon
+      browser.action.setBadgeText({ text: ICON_NOT_SYNCED });
+      browser.action.setBadgeBackgroundColor({ color: "#FFA500" }); // Orange
       // Trigger auto-sync if enabled
       await triggerAutoSync();
     }
   })
   browser.bookmarks.onMoved.addListener(async (id, info) => {
     if (curOperType === OperType.NONE) {
-      // console.log("onMoved", id, info)
-      browser.action.setBadgeText({ text: "!" });
-      browser.action.setBadgeBackgroundColor({ color: "#F00" });
+      // Show not synced icon
+      browser.action.setBadgeText({ text: ICON_NOT_SYNCED });
+      browser.action.setBadgeBackgroundColor({ color: "#FFA500" }); // Orange
       // Trigger auto-sync if enabled
       await triggerAutoSync();
     }
   })
   browser.bookmarks.onRemoved.addListener(async (id, info) => {
     if (curOperType === OperType.NONE) {
-      // console.log("onRemoved", id, info)
-      browser.action.setBadgeText({ text: "!" });
-      browser.action.setBadgeBackgroundColor({ color: "#F00" });
+      // Show not synced icon
+      browser.action.setBadgeText({ text: ICON_NOT_SYNCED });
+      browser.action.setBadgeBackgroundColor({ color: "#FFA500" }); // Orange
       refreshLocalCount();
       // Trigger auto-sync if enabled
       await triggerAutoSync();
@@ -124,14 +130,13 @@ export default defineBackground(() => {
       });
       const count = getBookmarkCount(syncdata.bookmarks);
       await browser.storage.local.set({ remoteCount: count });
-      if (setting.enableNotify) {
-        await browser.notifications.create({
-          type: "basic",
-          iconUrl: iconLogo,
-          title: browser.i18n.getMessage('uploadBookmarks'),
-          message: browser.i18n.getMessage('success')
-        });
-      }
+
+      // Show success with icon
+      browser.action.setBadgeText({ text: ICON_SYNCED });
+      browser.action.setBadgeBackgroundColor({ color: "#00AA00" });
+      setTimeout(() => {
+        browser.action.setBadgeText({ text: "" });
+      }, 2000);
 
     }
     catch (error: any) {
@@ -165,14 +170,13 @@ export default defineBackground(() => {
         await createBookmarkTree(syncdata.bookmarks);
         const count = getBookmarkCount(syncdata.bookmarks);
         await browser.storage.local.set({ remoteCount: count });
-        if (setting.enableNotify) {
-          await browser.notifications.create({
-            type: "basic",
-            iconUrl: iconLogo,
-            title: browser.i18n.getMessage('downloadBookmarks'),
-            message: browser.i18n.getMessage('success')
-          });
-        }
+
+        // Show success with icon
+        browser.action.setBadgeText({ text: ICON_SYNCED });
+        browser.action.setBadgeBackgroundColor({ color: "#00AA00" });
+        setTimeout(() => {
+          browser.action.setBadgeText({ text: "" });
+        }, 2000);
       }
       else {
         await browser.notifications.create({
@@ -231,13 +235,13 @@ export default defineBackground(() => {
           }
         }
       }
-      if (curOperType === OperType.REMOVE && setting.enableNotify) {
-        await browser.notifications.create({
-          type: "basic",
-          iconUrl: iconLogo,
-          title: browser.i18n.getMessage('removeAllBookmarks'),
-          message: browser.i18n.getMessage('success')
-        });
+      if (curOperType === OperType.REMOVE) {
+        // Show success with icon
+        browser.action.setBadgeText({ text: ICON_SYNCED });
+        browser.action.setBadgeBackgroundColor({ color: "#00AA00" });
+        setTimeout(() => {
+          browser.action.setBadgeText({ text: "" });
+        }, 2000);
       }
     }
     catch (error: any) {
@@ -443,47 +447,73 @@ export default defineBackground(() => {
         return;
       }
 
+      // Show syncing icon
+      isSyncing = true;
+      browser.action.setBadgeText({ text: ICON_SYNCING });
+      browser.action.setBadgeBackgroundColor({ color: "#0000FF" }); // Blue for syncing
+
       // Set operation type to prevent badge updates
       curOperType = OperType.SYNC;
 
       // Get local bookmarks
       const localBookmarks = await getBookmarks();
       const localCount = getBookmarkCount(localBookmarks);
+      const localData = formatBookmarks(localBookmarks);
 
       // Get remote bookmarks
       const remoteGist = await BookmarkService.get();
-      let shouldUpload = true;
 
       if (remoteGist) {
         const remoteData: SyncDataInfo = JSON.parse(remoteGist);
         const remoteCount = getBookmarkCount(remoteData.bookmarks);
 
-        // Simple strategy: if remote is newer and has different count, download
-        // Otherwise, upload local changes
-        if (remoteData.createDate > lastSyncTime && remoteCount !== localCount) {
-          // Download remote bookmarks
+        // Smart sync decision:
+        // 1. If we haven't tracked remote time yet, compare content
+        // 2. If remote was updated after our last known update AND content differs, download
+        // 3. Otherwise upload our changes
+
+        const localContentHash = JSON.stringify(localData);
+        const remoteContentHash = JSON.stringify(remoteData.bookmarks);
+
+        if (localContentHash === remoteContentHash) {
+          // Already in sync, nothing to do
+          console.log('Auto-sync: Already in sync');
+          lastRemoteUpdateTime = remoteData.createDate;
+        } else if (lastRemoteUpdateTime > 0 && remoteData.createDate > lastRemoteUpdateTime) {
+          // Remote has newer changes, download them
+          console.log('Auto-sync: Downloading newer remote changes');
           await clearBookmarkTree();
           await createBookmarkTree(remoteData.bookmarks);
           await browser.storage.local.set({ remoteCount: remoteCount });
-          shouldUpload = false;
+          lastRemoteUpdateTime = remoteData.createDate;
+        } else {
+          // Upload local changes
+          console.log('Auto-sync: Uploading local changes');
+          const syncdata = new SyncDataInfo();
+          syncdata.version = browser.runtime.getManifest().version;
+          syncdata.createDate = Date.now();
+          syncdata.bookmarks = localData;
+          syncdata.browser = navigator.userAgent;
 
-          if (setting.enableNotify) {
-            await browser.notifications.create({
-              type: "basic",
-              iconUrl: iconLogo,
-              title: browser.i18n.getMessage('autoSync') || 'Auto-sync',
-              message: browser.i18n.getMessage('downloadedFromGist') || 'Downloaded bookmarks from Gist'
-            });
-          }
+          await BookmarkService.update({
+            files: {
+              [setting.gistFileName]: {
+                content: JSON.stringify(syncdata)
+              }
+            },
+            description: setting.gistFileName
+          });
+
+          await browser.storage.local.set({ remoteCount: localCount });
+          lastRemoteUpdateTime = syncdata.createDate;
         }
-      }
-
-      if (shouldUpload) {
-        // Upload local bookmarks
+      } else {
+        // No remote data, upload initial
+        console.log('Auto-sync: Initial upload');
         const syncdata = new SyncDataInfo();
         syncdata.version = browser.runtime.getManifest().version;
         syncdata.createDate = Date.now();
-        syncdata.bookmarks = formatBookmarks(localBookmarks);
+        syncdata.bookmarks = localData;
         syncdata.browser = navigator.userAgent;
 
         await BookmarkService.update({
@@ -496,23 +526,27 @@ export default defineBackground(() => {
         });
 
         await browser.storage.local.set({ remoteCount: localCount });
-
-        if (setting.enableNotify) {
-          await browser.notifications.create({
-            type: "basic",
-            iconUrl: iconLogo,
-            title: browser.i18n.getMessage('autoSync') || 'Auto-sync',
-            message: browser.i18n.getMessage('uploadedToGist') || 'Uploaded bookmarks to Gist'
-          });
-        }
+        lastRemoteUpdateTime = syncdata.createDate;
       }
 
-      lastSyncTime = Date.now();
-      browser.action.setBadgeText({ text: "" });
+      // Show synced icon
+      browser.action.setBadgeText({ text: ICON_SYNCED });
+      browser.action.setBadgeBackgroundColor({ color: "#00AA00" }); // Green for synced
+
+      // Clear the badge after 2 seconds
+      setTimeout(() => {
+        if (!isSyncing) {
+          browser.action.setBadgeText({ text: "" });
+        }
+      }, 2000);
 
     } catch (error) {
       console.error('Auto-sync error:', error);
+      // Show error state
+      browser.action.setBadgeText({ text: "✗" });
+      browser.action.setBadgeBackgroundColor({ color: "#FF0000" }); // Red for error
     } finally {
+      isSyncing = false;
       curOperType = OperType.NONE;
       await refreshLocalCount();
     }
