@@ -6,10 +6,14 @@ import { Bookmarks } from 'wxt/browser'
 export default defineBackground(() => {
 
   browser.runtime.onInstalled.addListener(c => {
+    // Initialize auto-sync on installation
+    initializeAutoSync();
   });
 
   let curOperType = OperType.NONE;
   let curBrowserType = BrowserType.CHROME;
+  let autoSyncIntervalId: NodeJS.Timeout | null = null;
+  let lastSyncTime: number = 0;
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.name === 'upload') {
       curOperType = OperType.SYNC
@@ -42,6 +46,11 @@ export default defineBackground(() => {
     }
     if (msg.name === 'setting') {
       browser.runtime.openOptionsPage().then(() => {
+        sendResponse(true);
+      });
+    }
+    if (msg.name === 'updateAutoSync') {
+      initializeAutoSync().then(() => {
         sendResponse(true);
       });
     }
@@ -379,5 +388,123 @@ export default defineBackground(() => {
       }
   }
   */
+
+  // Auto-sync functions
+  async function initializeAutoSync() {
+    // Clear existing interval if any
+    if (autoSyncIntervalId) {
+      clearInterval(autoSyncIntervalId);
+      autoSyncIntervalId = null;
+    }
+
+    const setting = await Setting.build();
+
+    if (setting.enableAutoSync && setting.githubToken && setting.gistID) {
+      // Convert minutes to milliseconds
+      const intervalMs = setting.autoSyncInterval * 60 * 1000;
+
+      // Set up periodic sync
+      autoSyncIntervalId = setInterval(async () => {
+        await performAutoSync();
+      }, intervalMs);
+
+      // Also sync immediately if it's been long enough since last sync
+      const timeSinceLastSync = Date.now() - lastSyncTime;
+      if (timeSinceLastSync > intervalMs) {
+        await performAutoSync();
+      }
+    }
+  }
+
+  async function performAutoSync() {
+    try {
+      const setting = await Setting.build();
+
+      // Check if auto-sync is still enabled and configured
+      if (!setting.enableAutoSync || !setting.githubToken || !setting.gistID) {
+        if (autoSyncIntervalId) {
+          clearInterval(autoSyncIntervalId);
+          autoSyncIntervalId = null;
+        }
+        return;
+      }
+
+      // Set operation type to prevent badge updates
+      curOperType = OperType.SYNC;
+
+      // Get local bookmarks
+      const localBookmarks = await getBookmarks();
+      const localCount = getBookmarkCount(localBookmarks);
+
+      // Get remote bookmarks
+      const remoteGist = await BookmarkService.get();
+      let shouldUpload = true;
+
+      if (remoteGist) {
+        const remoteData: SyncDataInfo = JSON.parse(remoteGist);
+        const remoteCount = getBookmarkCount(remoteData.bookmarks);
+
+        // Simple strategy: if remote is newer and has different count, download
+        // Otherwise, upload local changes
+        if (remoteData.createDate > lastSyncTime && remoteCount !== localCount) {
+          // Download remote bookmarks
+          await clearBookmarkTree();
+          await createBookmarkTree(remoteData.bookmarks);
+          await browser.storage.local.set({ remoteCount: remoteCount });
+          shouldUpload = false;
+
+          if (setting.enableNotify) {
+            await browser.notifications.create({
+              type: "basic",
+              iconUrl: iconLogo,
+              title: browser.i18n.getMessage('autoSync') || 'Auto-sync',
+              message: browser.i18n.getMessage('downloadedFromGist') || 'Downloaded bookmarks from Gist'
+            });
+          }
+        }
+      }
+
+      if (shouldUpload) {
+        // Upload local bookmarks
+        const syncdata = new SyncDataInfo();
+        syncdata.version = browser.runtime.getManifest().version;
+        syncdata.createDate = Date.now();
+        syncdata.bookmarks = formatBookmarks(localBookmarks);
+        syncdata.browser = navigator.userAgent;
+
+        await BookmarkService.update({
+          files: {
+            [setting.gistFileName]: {
+              content: JSON.stringify(syncdata)
+            }
+          },
+          description: setting.gistFileName
+        });
+
+        await browser.storage.local.set({ remoteCount: localCount });
+
+        if (setting.enableNotify) {
+          await browser.notifications.create({
+            type: "basic",
+            iconUrl: iconLogo,
+            title: browser.i18n.getMessage('autoSync') || 'Auto-sync',
+            message: browser.i18n.getMessage('uploadedToGist') || 'Uploaded bookmarks to Gist'
+          });
+        }
+      }
+
+      lastSyncTime = Date.now();
+      browser.action.setBadgeText({ text: "" });
+
+    } catch (error) {
+      console.error('Auto-sync error:', error);
+    } finally {
+      curOperType = OperType.NONE;
+      await refreshLocalCount();
+    }
+  }
+
+  // Initialize auto-sync on startup
+  initializeAutoSync();
 
 });

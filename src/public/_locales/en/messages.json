@@ -86,5 +86,25 @@
     "removeAllBookmarksDesc": {
         "message": "Remove All Bookmarks, Please backup first",
         "description": ""
+    },
+    "enableAutoSync": {
+        "message": "Enable Auto-sync",
+        "description": ""
+    },
+    "autoSyncInterval": {
+        "message": "Sync Interval (minutes)",
+        "description": ""
+    },
+    "autoSync": {
+        "message": "Auto-sync",
+        "description": ""
+    },
+    "uploadedToGist": {
+        "message": "Uploaded bookmarks to Gist",
+        "description": ""
+    },
+    "downloadedFromGist": {
+        "message": "Downloaded bookmarks from Gist",
+        "description": ""
     }
 }
