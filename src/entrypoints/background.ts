@@ -26,7 +26,9 @@ export default defineBackground(() => {
       curOperType = OperType.SYNC
       uploadBookmarks().then(() => {
         curOperType = OperType.NONE
-        browser.action.setBadgeText({ text: "" });
+        // After manual upload, show synced state
+        browser.action.setBadgeText({ text: ICON_SYNCED });
+        browser.action.setBadgeBackgroundColor({ color: "#00AA00" });
         refreshLocalCount();
         sendResponse(true);
       });
@@ -35,7 +37,9 @@ export default defineBackground(() => {
       curOperType = OperType.SYNC
       downloadBookmarks().then(() => {
         curOperType = OperType.NONE
-        browser.action.setBadgeText({ text: "" });
+        // After manual download, show synced state
+        browser.action.setBadgeText({ text: ICON_SYNCED });
+        browser.action.setBadgeBackgroundColor({ color: "#00AA00" });
         refreshLocalCount();
         sendResponse(true);
       });
@@ -45,7 +49,9 @@ export default defineBackground(() => {
       curOperType = OperType.REMOVE
       clearBookmarkTree().then(() => {
         curOperType = OperType.NONE
-        browser.action.setBadgeText({ text: "" });
+        // After removing all, bookmarks are "synced" (empty state)
+        browser.action.setBadgeText({ text: ICON_SYNCED });
+        browser.action.setBadgeBackgroundColor({ color: "#00AA00" });
         refreshLocalCount();
         sendResponse(true);
       });
@@ -131,12 +137,9 @@ export default defineBackground(() => {
       const count = getBookmarkCount(syncdata.bookmarks);
       await browser.storage.local.set({ remoteCount: count });
 
-      // Show success with icon
+      // Show success with icon (keep it persistent)
       browser.action.setBadgeText({ text: ICON_SYNCED });
       browser.action.setBadgeBackgroundColor({ color: "#00AA00" });
-      setTimeout(() => {
-        browser.action.setBadgeText({ text: "" });
-      }, 2000);
 
     }
     catch (error: any) {
@@ -414,6 +417,10 @@ export default defineBackground(() => {
 
     // If auto-sync is enabled, perform an initial sync to get the latest state
     if (setting.enableAutoSync && setting.githubToken && setting.gistID) {
+      // Show synced state on startup (optimistic)
+      browser.action.setBadgeText({ text: ICON_SYNCED });
+      browser.action.setBadgeBackgroundColor({ color: "#00AA00" });
+
       await performAutoSync();
     }
   }
@@ -529,16 +536,9 @@ export default defineBackground(() => {
         lastRemoteUpdateTime = syncdata.createDate;
       }
 
-      // Show synced icon
+      // Show synced icon (keep it persistent)
       browser.action.setBadgeText({ text: ICON_SYNCED });
       browser.action.setBadgeBackgroundColor({ color: "#00AA00" }); // Green for synced
-
-      // Clear the badge after 2 seconds
-      setTimeout(() => {
-        if (!isSyncing) {
-          browser.action.setBadgeText({ text: "" });
-        }
-      }, 2000);
 
     } catch (error) {
       console.error('Auto-sync error:', error);
