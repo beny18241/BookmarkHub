@@ -6,9 +6,11 @@
     <img src="images/icon128.png" alt="BookmarkHub" >
   </a>
 
-  <h1 align="center">BookmarkHub</h1>
+  <h1 align="center">BookmarkHub Auto-Sync</h1>
   <p align="center">
-    BookmarkHub is a browser plug-in that can synchronize your bookmarks between different browsers.
+    BookmarkHub with real-time auto-sync - automatically syncs your bookmarks when changes are detected.
+    <br />
+    <small>Based on original <a href="https://github.com/dudor/BookmarkHub">BookmarkHub</a> by dudor</small>
     <br />
     <a href="https://github.com/dudor/BookmarkHub/issues">Feedback</a>
     ·
